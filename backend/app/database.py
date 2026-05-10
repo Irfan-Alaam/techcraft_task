@@ -22,7 +22,7 @@ async def get_db() -> aiosqlite.Connection:
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        await db.executescript(SCHEMA_SQL)   # schema lives in models.py
+        await db.executescript(SCHEMA_SQL)
         await db.commit()
         await _seed_demo_data(db)
 
