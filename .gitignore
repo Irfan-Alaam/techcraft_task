@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Environment Variables
+.env
+.env.*
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# FastAPI / Uvicorn
+*.pid
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+
+# Vite
+.vite/
+
+# Docker
+*.tar
+
+# Misc
+tmp/
+temp/
