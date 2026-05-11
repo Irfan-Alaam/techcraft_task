@@ -14,7 +14,7 @@ An internal recruitment review tool for scoring candidates, generating AI summar
 
 ```bash
 # 1. Clone the repo
-git clone <your-repo-url>
+git clone https://github.com/Irfan-Alaam/techcraft_task.git
 cd <repo>
 
 # 2. Copy env files

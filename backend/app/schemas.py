@@ -2,13 +2,9 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional
 import json
 
-
-# ── Auth ──────────────────────────────────────────────────────────────────────
-
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
-    # role is intentionally NOT accepted from client — always set to 'reviewer'
 
 
 class LoginRequest(BaseModel):
@@ -28,8 +24,6 @@ class UserOut(BaseModel):
     created_at: str
 
 
-# ── Candidate ─────────────────────────────────────────────────────────────────
-
 class CandidateOut(BaseModel):
     id: str
     name: str
@@ -39,7 +33,6 @@ class CandidateOut(BaseModel):
     skills: list[str]
     ai_summary: Optional[str]
     created_at: str
-    # internal_notes excluded by default; added conditionally in endpoint
 
     @classmethod
     def from_row(cls, row) -> "CandidateOut":
@@ -71,8 +64,6 @@ class CandidateListResponse(BaseModel):
     has_next: bool
 
 
-# ── Scores ────────────────────────────────────────────────────────────────────
-
 class ScoreCreate(BaseModel):
     category: str = Field(min_length=1, max_length=100)
     score: int = Field(ge=1, le=5)
@@ -93,14 +84,9 @@ class ScoreOut(BaseModel):
         return cls(**dict(row))
 
 
-# ── AI Summary ────────────────────────────────────────────────────────────────
-
 class SummaryResponse(BaseModel):
     candidate_id: str
     summary: str
-
-
-# ── Internal Notes (admin only) ───────────────────────────────────────────────
 
 class NotesUpdate(BaseModel):
     internal_notes: str = Field(max_length=5000)
