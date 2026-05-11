@@ -1,10 +1,23 @@
+"""
+models.py — canonical DB schema definition.
+
+This is the single source of truth for:
+- Table/column names (as string constants)
+- Enum values for status and roles
+- The DDL used by database.py to initialize the schema
+
+Other modules import constants from here instead of using raw strings,
+which prevents typos and makes refactoring safe.
+"""
+
+# ── Enums / allowed values ────────────────────────────────────────────────────
 
 class CandidateStatus:
     NEW      = "new"
     REVIEWED = "reviewed"
     HIRED    = "hired"
     REJECTED = "rejected"
-    ARCHIVED = "archived"  
+    ARCHIVED = "archived"   # set on soft delete
 
     ALL = {NEW, REVIEWED, HIRED, REJECTED, ARCHIVED}
 
@@ -12,6 +25,7 @@ class CandidateStatus:
 class UserRole:
     REVIEWER = "reviewer"
     ADMIN    = "admin"
+
     ALL = {REVIEWER, ADMIN}
 
 
@@ -20,11 +34,16 @@ class ScoreRange:
     MAX = 5
 
 
+# ── Table name constants ──────────────────────────────────────────────────────
+
 TABLE_USERS      = "users"
 TABLE_CANDIDATES = "candidates"
 TABLE_SCORES     = "scores"
 
 
+# ── DDL ───────────────────────────────────────────────────────────────────────
+# database.py calls init_db() which executes this script.
+# Keeping DDL here means schema changes are made in one place.
 
 SCHEMA_SQL = """
 PRAGMA journal_mode=WAL;

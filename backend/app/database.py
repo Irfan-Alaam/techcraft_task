@@ -1,17 +1,13 @@
 import aiosqlite
-import os
+import uuid
 import json
-from dotenv import load_dotenv
-
+from app.security import hash_password
 from app.models import SCHEMA_SQL
-
-load_dotenv()
-
-DB_PATH = os.getenv("DB_PATH", "./techkraft.db")
+from app.config import settings
 
 
 async def get_db() -> aiosqlite.Connection:
-    db = await aiosqlite.connect(DB_PATH)
+    db = await aiosqlite.connect(settings.DB_PATH)
     db.row_factory = aiosqlite.Row
     try:
         yield db
@@ -20,21 +16,39 @@ async def get_db() -> aiosqlite.Connection:
 
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(settings.DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         await db.executescript(SCHEMA_SQL)
         await db.commit()
+
+        await _seed_admin(db)
         await _seed_demo_data(db)
 
+async def _seed_admin(db: aiosqlite.Connection):
+    admin_email = settings.ADMIN_EMAIL
+    admin_password = settings.ADMIN_PASSWORD
 
+    cursor = await db.execute(
+        "SELECT id FROM users WHERE email = ?",
+        (admin_email,)
+    )
+
+    if await cursor.fetchone() is None:
+        await db.execute(
+            """
+            INSERT INTO users (id, email, hashed_password, role)
+            VALUES (?, ?, ?, 'admin')
+            """,
+            (str(uuid.uuid4()), admin_email, hash_password(admin_password)),
+        )
+        await db.commit()
+        
 async def _seed_demo_data(db: aiosqlite.Connection):
-    """Insert demo candidates if table is empty."""
     row = await db.execute("SELECT COUNT(*) FROM candidates")
     count = (await row.fetchone())[0]
     if count > 0:
         return
 
-    import uuid, json
     candidates = [
         ("c1", "Aarav Sharma", "aarav@example.com", "Backend Engineer", "new",
          json.dumps(["Python", "FastAPI", "AWS Lambda"]), None),

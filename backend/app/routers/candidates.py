@@ -22,6 +22,9 @@ from app.services import candidate_service as svc
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
+
+# ── GET /candidates ───────────────────────────────────────────────────────────
+
 @router.get("", response_model=CandidateListResponse)
 async def list_candidates(
     status: Optional[str] = Query(default=None),
