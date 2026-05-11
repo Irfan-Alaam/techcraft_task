@@ -188,8 +188,6 @@ async def delete_candidate(
         raise HTTPException(status_code=404, detail="Candidate not found")
 
 
-# ── PATCH /candidates/{id}/notes  (admin only) ────────────────────────────────
-
 @router.patch("/{candidate_id}/notes", status_code=status.HTTP_204_NO_CONTENT)
 async def update_notes(
     candidate_id: str,

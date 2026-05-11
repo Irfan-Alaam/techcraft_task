@@ -41,8 +41,6 @@ async def list_candidates(
         params.extend([kw, kw, kw])
 
     where_clause = "WHERE " + " AND ".join(conditions)
-
-    # Count total matching rows — separate query, same filters, no LIMIT
     count_sql = f"SELECT COUNT(*) FROM candidates {where_clause}"
     cursor = await db.execute(count_sql, params)
     total = (await cursor.fetchone())[0]

@@ -23,7 +23,6 @@ async def register(body: RegisterRequest, db: aiosqlite.Connection = Depends(get
             detail="Email already registered",
         )
     hashed = hash_password(body.password)
-    # Role is ALWAYS 'reviewer' — never taken from client
     user = await create_user(body.email, hashed, db)
     return UserOut(**user)
 
