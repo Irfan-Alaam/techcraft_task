@@ -23,8 +23,6 @@ from app.services import candidate_service as svc
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
 
-# ── GET /candidates ───────────────────────────────────────────────────────────
-
 @router.get("", response_model=CandidateListResponse)
 async def list_candidates(
     status: Optional[str] = Query(default=None),
@@ -62,8 +60,6 @@ async def list_candidates(
     )
 
 
-# ── GET /candidates/{id} ──────────────────────────────────────────────────────
-
 @router.get("/{candidate_id}")
 async def get_candidate(
     candidate_id: str,
@@ -73,8 +69,6 @@ async def get_candidate(
     row = await svc.get_candidate(db, candidate_id)
     if not row:
         raise HTTPException(status_code=404, detail="Candidate not found")
-
-    # Scores: admin sees all, reviewer sees only own
     reviewer_filter = None if user.is_admin else user.id
     score_rows = await svc.get_scores_for_candidate(db, candidate_id, reviewer_filter)
     scores = [ScoreOut.from_row(s) for s in score_rows]
@@ -86,8 +80,6 @@ async def get_candidate(
         candidate = CandidateOut.from_row(row)
         return {**candidate.model_dump(), "scores": [s.model_dump() for s in scores]}
 
-
-# ── POST /candidates/{id}/scores ──────────────────────────────────────────────
 
 @router.post("/{candidate_id}/scores", response_model=ScoreOut, status_code=status.HTTP_201_CREATED)
 async def submit_score(
@@ -111,20 +103,13 @@ async def submit_score(
     return ScoreOut.from_row(score_row)
 
 
-# ── POST /candidates/{id}/summary ─────────────────────────────────────────────
-
 @router.post("/{candidate_id}/summary", response_model=SummaryResponse)
 async def generate_summary(
     candidate_id: str,
     db: aiosqlite.Connection = Depends(get_db),
     _: CurrentUser = Depends(get_current_user),
 ):
-    """
-    Mock async LLM call — simulates a 2s delay then generates a summary.
-    In production this would call AWS Bedrock / OpenAI with await.
-    The 2s sleep represents the async external API call — the event loop
-    remains free to handle other requests during the wait.
-    """
+    
     row = await svc.get_candidate(db, candidate_id)
     if not row:
         raise HTTPException(status_code=404, detail="Candidate not found")
@@ -132,7 +117,7 @@ async def generate_summary(
     candidate = dict(row)
     skills = json.loads(candidate.get("skills", "[]"))
 
-    # Simulate async LLM latency without blocking the event loop
+   
     await asyncio.sleep(2)
 
     summary = (
@@ -147,18 +132,12 @@ async def generate_summary(
     return SummaryResponse(candidate_id=candidate_id, summary=summary)
 
 
-# ── GET /candidates/{id}/stream  (SSE — stretch goal) ────────────────────────
-
 @router.get("/{candidate_id}/stream")
 async def stream_scores(
     candidate_id: str,
     db: aiosqlite.Connection = Depends(get_db),
     user: CurrentUser = Depends(get_current_user),
 ):
-    """
-    SSE endpoint that streams score updates every 3 seconds.
-    Client connects and receives real-time score snapshots.
-    """
     row = await svc.get_candidate(db, candidate_id)
     if not row:
         raise HTTPException(status_code=404, detail="Candidate not found")
@@ -166,12 +145,11 @@ async def stream_scores(
     reviewer_filter = None if user.is_admin else user.id
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        # Send an initial connection confirmation
         yield f"event: connected\ndata: {json.dumps({'candidate_id': candidate_id})}\n\n"
 
         last_count = -1
         poll_count = 0
-        max_polls = 20  # auto-close after ~60s to prevent zombie connections
+        max_polls = 20  
 
         while poll_count < max_polls:
             await asyncio.sleep(3)
@@ -183,7 +161,7 @@ async def stream_scores(
                 payload = json.dumps({"scores": scores, "total": len(scores)})
                 yield f"event: scores_update\ndata: {payload}\n\n"
             else:
-                # heartbeat to keep connection alive
+
                 yield f"event: heartbeat\ndata: {{}}\n\n"
 
             poll_count += 1
@@ -198,9 +176,6 @@ async def stream_scores(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-# ── DELETE /candidates/{id}  (soft delete) ────────────────────────────────────
 
 @router.delete("/{candidate_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_candidate(

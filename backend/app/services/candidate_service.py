@@ -14,13 +14,7 @@ async def list_candidates(
     page: int,
     page_size: int,
 ) -> tuple[list[aiosqlite.Row], int]:
-    """
-    Return paginated candidates matching filters.
-
-    All filtering and pagination is done IN THE DATABASE — not in Python.
-    This avoids the N+1 / full-table-scan anti-pattern where you'd fetch
-    all rows and slice in Python (see README bug analysis).
-    """
+    
     conditions = ["deleted_at IS NULL"]
     params: list = []
 
@@ -33,7 +27,6 @@ async def list_candidates(
         params.append(role_applied)
 
     if skill:
-        # skills stored as JSON array; use JSON_EACH for proper set membership
         conditions.append(
             "EXISTS ("
             "  SELECT 1 FROM json_each(skills)"
