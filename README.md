@@ -1,25 +1,88 @@
-# TechKraft Candidate Scoring Dashboard
+# TechKraft — Candidate Scoring Dashboard
 
 An internal recruitment review tool for scoring candidates, generating AI summaries, and managing assessments with role-based access control.
+
+> **Stack:** FastAPI · aiosqlite · JWT · React + Vite · Docker Compose
+
+---
+
+## ⚠️ Debugging Signal — Bug Analysis
+
+**The buggy pattern provided:**
+
+```python
+def search_candidates(status: str, keyword: str, page: int, page_size: int):
+    all_candidates = db.execute("SELECT * FROM candidates").fetchall()
+    filtered = [c for c in all_candidates if c["status"] == status]
+    # ... also filter by keyword in Python ...
+    offset = (page - 1) * page_size
+    return filtered[offset : offset + page_size]
+```
+
+**The bug — full table scan + in-memory filtering:**
+
+`SELECT * FROM candidates` fetches every row into application memory before
+any filtering or pagination happens. Three compounding problems:
+
+| Problem | Impact at scale |
+|---|---|
+| Full table loaded into memory | 10,000 candidates → 10,000 rows deserialized on every search |
+| DB indexes never used | No `WHERE` clause reaches the engine — indexes on `status`, `role_applied` are wasted |
+| Paginating filtered Python list | `filtered[offset:offset+page_size]` discards most of what was fetched |
+
+**The correct approach — push everything into SQL:**
+
+```python
+async def list_candidates(db, status, role_applied, skill, keyword, page, page_size):
+    conditions = ["deleted_at IS NULL"]
+    params = []
+
+    if status:
+        conditions.append("status = ?")           # uses idx_candidates_status
+        params.append(status)
+    if role_applied:
+        conditions.append("role_applied = ?")     # uses idx_candidates_role_applied
+        params.append(role_applied)
+    if keyword:
+        kw = f"%{keyword.lower()}%"
+        conditions.append("(LOWER(name) LIKE ? OR LOWER(email) LIKE ?)")
+        params.extend([kw, kw])
+
+    where  = "WHERE " + " AND ".join(conditions)
+    offset = (page - 1) * page_size
+
+    total = (await (await db.execute(
+        f"SELECT COUNT(*) FROM candidates {where}", params
+    )).fetchone())[0]
+
+    rows = await (await db.execute(
+        f"SELECT * FROM candidates {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        params + [page_size, offset]
+    )).fetchall()
+
+    return rows, total
+```
+
+This is exactly how `backend/app/services/candidate_service.py` implements it.
+The DB engine uses its indexes, transfers only the required rows, and memory
+usage stays constant regardless of table size.
 
 ---
 
 ## Quick Start
 
 ### Prerequisites
-- Docker & Docker Compose, **or**
-- Python 3.11+ and Node 20+ for local development
+- Docker & Docker Compose **or** Python 3.11+ and Node 20+
 
 ### Option A — Docker Compose (recommended)
 
 ```bash
 # 1. Clone the repo
 git clone https://github.com/Irfan-Alaam/techcraft_task.git
-cd <repo>
+cd techcraft_task
 
-# 2. Copy env files
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
+# 2. Copy env file
+cp .env.example .env          # edit values if needed
 
 # 3. Start both services
 docker compose up --build
@@ -38,10 +101,9 @@ docker compose up --build
 cd backend
 python -m venv .venv
 .venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # macOS/Linux
+# source .venv/bin/activate   # macOS / Linux
 pip install -r requirements.txt
-pip install -e .              # makes app.* importable
-cp .env.example .env
+pip install -e .              # makes app.* importable across processes
 uvicorn app.main:app --reload
 ```
 
@@ -49,18 +111,19 @@ uvicorn app.main:app --reload
 ```bash
 cd frontend
 npm install
-cp .env.example .env
 npm run dev
 ```
 
 ### Default Credentials
 
-| Role     | Email                    | Password  |
-|----------|--------------------------|-----------|
-| Admin    | admin@techkraft.com      | admin123  |
-| Reviewer | register via /login page | your choice |
+| Role     | Email               | Password     | How created                        |
+|----------|---------------------|--------------|------------------------------------|
+| Admin    | admin@techkraft.com | admin123     | Seeded automatically on first run  |
+| Reviewer | any email           | your choice  | Register via `/login` page         |
 
-> Admin credentials are seeded on first startup from `ADMIN_EMAIL` / `ADMIN_PASSWORD` env vars. Change them before deploying.
+> Admin credentials are read from `ADMIN_EMAIL` / `ADMIN_PASSWORD` env vars
+> (see `.env.example`). Registration is always hardcoded to `reviewer` —
+> the seed is the only path to an admin account.
 
 ---
 
@@ -69,138 +132,184 @@ npm run dev
 ```bash
 cd backend
 pytest
+# Expected: 3 passed
 ```
 
-Expected output: `3 passed`
+**Tests cover:**
+1. `test_list_candidates_returns_paginated_results` — GET /candidates pagination structure
+2. `test_reviewer_cannot_see_other_reviewers_scores` — score isolation between reviewers
+3. `test_registration_always_assigns_reviewer_role` — role spoofing prevention
 
 ---
 
 ## Example API Calls
 
-### Register & Login
+### Auth
+
 ```bash
-# Register (always creates a reviewer)
+# Register (always creates a reviewer — role cannot be injected)
 curl -X POST http://localhost:8000/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email": "reviewer@test.com", "password": "pass123"}'
 
-# Login
+# Login as admin
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email": "admin@techkraft.com", "password": "admin123"}'
+# → returns { "access_token": "<jwt>", "token_type": "bearer" }
 ```
 
 ### Candidates
+
 ```bash
-# List candidates (with filters)
-curl http://localhost:8000/candidates?status=new&skill=Python&page=1&page_size=10 \
+# List with filters + pagination (all filtering is SQL-side)
+curl "http://localhost:8000/candidates?status=new&skill=Python&page=1&page_size=10" \
   -H "Authorization: Bearer <token>"
 
-# Get candidate detail
+# Get candidate detail (admin sees internal_notes + all scores; reviewer sees own scores only)
 curl http://localhost:8000/candidates/c1 \
   -H "Authorization: Bearer <token>"
 
-# Submit a score
+# Submit a score (1–5)
 curl -X POST http://localhost:8000/candidates/c1/scores \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"category": "Technical Skills", "score": 4, "note": "Strong async knowledge"}'
 
-# Trigger AI summary (2s mock delay)
+# Trigger AI summary — 2s async mock delay, non-blocking
 curl -X POST http://localhost:8000/candidates/c1/summary \
   -H "Authorization: Bearer <token>"
 
-# Update internal notes (admin only)
+# Update internal notes — admin only, returns 403 for reviewers
 curl -X PATCH http://localhost:8000/candidates/c1/notes \
   -H "Authorization: Bearer <admin-token>" \
   -H "Content-Type: application/json" \
   -d '{"internal_notes": "Strong candidate, fast-track to final round."}'
 
-# SSE score stream (stretch goal)
+# Soft delete — sets deleted_at, never hard-deletes (admin only)
+curl -X DELETE http://localhost:8000/candidates/c1 \
+  -H "Authorization: Bearer <admin-token>"
+
+# SSE score stream — stretch goal
 curl -N http://localhost:8000/candidates/c1/stream \
   -H "Authorization: Bearer <token>"
 ```
 
 ---
 
-## Debugging Signal — Bug Analysis
-
-The following pattern was provided as a debugging exercise:
-
-```python
-def search_candidates(status: str, keyword: str, page: int, page_size: int):
-    all_candidates = db.execute("SELECT * FROM candidates").fetchall()
-    filtered = [c for c in all_candidates if c["status"] == status]
-    # ... also filter by keyword in Python ...
-    offset = (page - 1) * page_size
-    return filtered[offset : offset + page_size]
-```
-
-**The bug:** `SELECT * FROM candidates` fetches every row in the table into application memory before any filtering or pagination happens. Python then filters and slices the list.
-
-**Why it matters at scale:** With 10,000 candidates, every search query transfers all 10,000 rows over the DB connection, deserializes them into Python dicts, and then discards most of them. Memory usage grows linearly with table size. Response time degrades even when the result set is tiny (e.g. 1 match out of 10,000 rows). This also defeats any DB indexes — they are never used because no `WHERE` clause reaches the DB engine.
-
-**The correct approach:** Push all filtering and pagination into SQL so the database engine uses its indexes and returns only the rows actually needed:
-
-```python
-async def search_candidates(status, keyword, page, page_size):
-    conditions = ["deleted_at IS NULL"]
-    params = []
-    if status:
-        conditions.append("status = ?")
-        params.append(status)
-    if keyword:
-        kw = f"%{keyword.lower()}%"
-        conditions.append("(LOWER(name) LIKE ? OR LOWER(email) LIKE ?)")
-        params.extend([kw, kw])
-    where = "WHERE " + " AND ".join(conditions)
-    offset = (page - 1) * page_size
-    rows = await db.execute(
-        f"SELECT * FROM candidates {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params + [page_size, offset]
-    )
-    return await rows.fetchall()
-```
-
-This is exactly how `candidate_service.py` implements it in this project.
-
----
-
 ## Architecture Decision Records
 
-### ADR 1 — SQLite over DynamoDB for local development
+### ADR 1 — SQL-level filtering with explicit indexes (not in-memory)
 
-**Context:** The spec mentioned "DynamoDB-style or SQLite." DynamoDB requires AWS credentials, a running LocalStack instance, or a paid AWS account to develop against locally.
+**Context:** Candidate search requires filtering by `status`, `role_applied`, `skill`,
+and `keyword` with offset-based pagination. The naive approach is fetching all rows
+and filtering in Python — which is the exact anti-pattern shown in the debugging signal.
 
-**Decision:** Use SQLite via `aiosqlite` for the persistence layer, with a schema shaped to match DynamoDB patterns (single-table-style IDs, status-based filtering with indexes).
+**Decision:** All filtering, counting, and pagination happens in SQL. Three indexes
+are created explicitly in `models.py`:
 
-**Trade-off:** SQLite does not scale horizontally and is not suitable for multi-instance production deployments. In a real AWS serverless deployment this would be swapped for DynamoDB with GSIs on `status` and `role_applied`. The service layer (`candidate_service.py`) is the only file that would need to change — all business logic and API contracts remain identical.
+```sql
+CREATE INDEX idx_candidates_status      ON candidates(status);
+CREATE INDEX idx_candidates_role_applied ON candidates(role_applied);
+CREATE INDEX idx_scores_candidate_id    ON scores(candidate_id);
+```
+
+The service layer (`candidate_service.py`) builds parameterized `WHERE` clauses
+dynamically and passes `LIMIT`/`OFFSET` to the DB engine — the application never
+loads more rows than the page size.
+
+**Trade-off:** Dynamic SQL construction requires careful parameterization to avoid
+injection. All values go through `?` placeholders — never string-interpolated.
 
 ---
 
-### ADR 2 — FastAPI over Flask / Django
+### ADR 2 — Service layer separation (routers never touch DB directly)
 
-**Context:** The backend needs async support for the SSE streaming endpoint and the mock LLM call, both of which require non-blocking I/O. The project also benefits from automatic OpenAPI documentation.
+**Context:** FastAPI routers could query the DB directly via the `db` dependency.
+This works but tightly couples HTTP concerns (request parsing, response shaping)
+with persistence concerns (query construction, result mapping).
+
+**Decision:** All DB queries live exclusively in `services/candidate_service.py`.
+Routers call service functions and receive domain objects. This means:
+- Swapping SQLite for DynamoDB only requires changing `candidate_service.py`
+- Routers stay thin and testable without a real DB
+- The service layer is independently unit-testable
+
+**Trade-off:** For a small project this adds one indirection layer. The benefit
+pays off at the point where the persistence layer needs to change — which is
+exactly the DynamoDB swap this project is designed to eventually make.
+
+---
+
+### ADR 3 — FastAPI over Flask / Django
+
+**Context:** The backend needs async support for the SSE streaming endpoint and
+the mock LLM call (`asyncio.sleep(2)`), both requiring non-blocking I/O.
 
 **Decision:** FastAPI with `uvicorn` and `aiosqlite` for a fully async stack.
+Auto-generated OpenAPI docs at `/docs` come for free.
 
-**Trade-off:** FastAPI's dependency injection system has a steeper learning curve than Flask's simplicity. Django was ruled out because its ORM and middleware are synchronous by default and would require additional configuration (`ASGI` mode, `django-ninja` or similar) to support the async patterns needed here. FastAPI gives async-first behavior out of the box with zero extra configuration.
+**Trade-off:** FastAPI's dependency injection has a steeper learning curve than
+Flask. Django was ruled out — its ORM is synchronous by default and requires
+additional configuration (`django-ninja` or ASGI mode) to support the async
+patterns needed here.
 
 ---
 
-### ADR 3 — JWT stored in localStorage with role embedded in token
+### ADR 4 — JWT with embedded role, stored in localStorage
 
-**Context:** The app needs role-based UI rendering (show/hide admin panels) without a round-trip to the server on every page load. Two options: opaque tokens with a `/me` endpoint, or self-contained JWTs.
+**Context:** Role-based UI rendering (admin notes panel, score visibility) requires
+knowing the user's role client-side without a `/me` round-trip on every page load.
 
-**Decision:** JWT with `role` embedded in the payload, stored in `localStorage`. The frontend decodes the payload client-side (no verification — just `atob`) for UI decisions. All authorization enforcement happens server-side in FastAPI via the `require_admin` dependency.
+**Decision:** JWT with `role` embedded in the payload. The frontend decodes it
+client-side (`atob`) for UI decisions only. All authorization enforcement happens
+server-side via the `require_admin` FastAPI dependency — the frontend role is
+purely cosmetic.
 
-**Trade-off:** `localStorage` is vulnerable to XSS attacks; `httpOnly` cookies would be more secure. Embedding `role` in the token means a role change (e.g. promoting a reviewer to admin) requires the user to log out and back in before the new role takes effect. For an internal tool with a small team this is an acceptable trade-off. A production system would use short-lived tokens with a refresh mechanism.
+**Trade-off:** `localStorage` is vulnerable to XSS; `httpOnly` cookies are more
+secure. Role changes require re-login since the role is baked into the token at
+issue time. Acceptable for an internal tool — a production system would use
+short-lived tokens with a refresh flow.
 
 ---
 
 ## Learning Reflection
 
-Building the SSE streaming endpoint was new territory — specifically managing the async generator lifecycle inside FastAPI's `StreamingResponse` and ensuring the event loop stays free during the polling interval (`asyncio.sleep`) rather than blocking. Given more time, I would explore replacing the polling-based SSE implementation with DynamoDB Streams or EventBridge Pipes, which would push real-time score events rather than polling the DB every 3 seconds — a much cleaner event-driven pattern that fits the serverless architecture TechKraft uses in production.
+Building the SSE streaming endpoint was new territory — specifically managing the
+async generator lifecycle inside FastAPI's `StreamingResponse` and ensuring the
+event loop stays free during polling intervals via `asyncio.sleep()` rather than
+blocking. The current implementation polls the DB every 3 seconds; given more time
+I would replace this with DynamoDB Streams or EventBridge Pipes, which push score
+events rather than polling — a cleaner event-driven pattern that aligns with
+TechKraft's serverless architecture and eliminates unnecessary DB reads entirely.
+
+---
+
+## Key Implementation Details
+
+### Role-Based Access Control
+- Registration is **hardcoded to `reviewer`** — the `RegisterRequest` Pydantic schema
+  has no `role` field, so clients cannot inject one
+- Admin account is seeded at startup via env vars — never via registration
+- `require_admin` FastAPI dependency guards all admin endpoints; returns `403` for reviewers
+- Score queries: admin passes `reviewer_filter=None` → all scores; reviewer passes their `id` → own scores only
+
+### Soft Delete
+- `DELETE /candidates/{id}` sets `deleted_at = datetime('now')` and `status = 'archived'`
+- No `DELETE FROM` exists anywhere in the codebase
+- All list queries include `WHERE deleted_at IS NULL`
+
+### Mock AI Summary
+- `POST /candidates/{id}/summary` runs `await asyncio.sleep(2)` — non-blocking,
+  event loop remains free for other requests during the wait
+- Frontend shows a spinner + "Generating..." message during the 2s delay
+- Error state displayed if the request fails — never a blank page
+
+### SSE Stream (stretch goal)
+- `GET /candidates/{id}/stream` returns `StreamingResponse` with `text/event-stream`
+- Async generator polls DB every 3s, emits `scores_update` events on change
+- Heartbeat events keep the connection alive between updates
+- Auto-closes after 60s to prevent zombie connections
 
 ---
 
@@ -210,51 +319,57 @@ Building the SSE streaming endpoint was new territory — specifically managing 
 /
 ├── README.md
 ├── docker-compose.yml
+├── .env.example                          # root-level for docker-compose variable substitution
 ├── backend/
 │   ├── Dockerfile
-│   ├── pyproject.toml          # makes app.* importable via pip install -e .
-│   ├── pytest.ini
+│   ├── pyproject.toml                    # pip install -e . makes app.* importable
+│   ├── pytest.ini                        # asyncio_mode = auto
 │   ├── requirements.txt
-│   ├── .env.example
 │   └── app/
-│       ├── main.py             # FastAPI app, CORS, lifespan
-│       ├── models.py           # DB schema DDL + enum constants
-│       ├── schemas.py          # Pydantic request/response models
-│       ├── auth.py             # JWT, password hashing, role dependencies
-│       ├── database.py         # aiosqlite setup, init, seed
+│       ├── main.py                       # FastAPI app, CORS, lifespan hook
+│       ├── config.py                     # Single load_dotenv() call, Settings class
+│       ├── models.py                     # DDL schema + index definitions + enums
+│       ├── schemas.py                    # Pydantic I/O models
+│       ├── auth.py                       # JWT encode/decode, require_admin dependency
+│       ├── database.py                   # aiosqlite setup, init_db, seed
 │       ├── routers/
-│       │   ├── auth.py         # POST /auth/register, /auth/login
-│       │   └── candidates.py   # All candidate endpoints + SSE
+│       │   ├── auth.py                   # POST /auth/register, /auth/login
+│       │   └── candidates.py            # All candidate endpoints + SSE
 │       └── services/
-│           └── candidate_service.py   # All DB queries
-├── tests/
-│   └── test_api.py             # 3 tests: pagination, score isolation, role spoofing
+│           └── candidate_service.py     # All DB queries — routers never touch DB directly
+└── backend/tests/
+│   └── test_api.py                      # 3 tests: pagination, score isolation, role spoofing
 └── frontend/
     ├── Dockerfile
-    ├── nginx.conf
-    ├── .env.example
+    ├── nginx.conf                        # SPA fallback + /api proxy to backend
     ├── package.json
     ├── vite.config.js
     └── src/
-        ├── api.js              # All fetch calls in one place
-        ├── App.jsx             # Router setup
-        ├── styles.css          # Design tokens + global styles
-        ├── context/
-        │   └── AuthContext.jsx # Global auth state + isAdmin
+        ├── api.js                        # All fetch calls, token management
+        ├── App.jsx                       # Router + AuthProvider
+        ├── styles.css                    # CSS variables, global tokens
+        ├── context/AuthContext.jsx       # isAdmin derived from JWT payload
         ├── components/
         │   ├── Navbar.jsx
         │   ├── ProtectedRoute.jsx
         │   ├── StatusBadge.jsx
         │   ├── ScoreForm.jsx
-        │   └── AISummaryPanel.jsx
+        │   └── AISummaryPanel.jsx        # Loading + error states for AI summary
         └── pages/
             ├── LoginPage.jsx
-            ├── CandidateListPage.jsx
-            └── CandidateDetailPage.jsx
+            ├── CandidateListPage.jsx     # Filters + pagination
+            └── CandidateDetailPage.jsx  # Scores, AI summary, admin notes panel
 ```
+
+---
 
 ## Known Limitations
 
-- **No POST /candidates endpoint** — the spec does not define one; demo candidates are seeded on startup. A real implementation would add this with admin-only access.
-- **SSE auth via query param** — browser `EventSource` does not support custom headers, so the token is passed as a query param for the stream endpoint. A production system would use a short-lived stream token instead.
-- **SQLite single-writer** — concurrent writes under high load will serialize. Acceptable for an internal tool; swap to DynamoDB or PostgreSQL for production scale.
+- **No `POST /candidates` endpoint** — the spec does not define one. Demo candidates
+  are seeded on startup. A real implementation would add this as an admin-only endpoint.
+- **SSE auth limitation** — browser `EventSource` does not support custom headers,
+  so the Bearer token cannot be sent the standard way on the stream endpoint.
+  A production system would issue a short-lived stream token for this purpose.
+- **SQLite single-writer** — concurrent writes serialize under load. Acceptable for
+  an internal tool with a small team. The service layer is the only change point
+  for a DynamoDB migration.
